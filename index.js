@@ -1,7 +1,7 @@
 const express = require('express')
 var cors = require('cors')
 const dotenv = require('dotenv');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express()
 const port = process.env.PORT || 3000;
 
@@ -25,7 +25,7 @@ function verifyToken(req, res, next) {
     jwt.verify(token, secret, (err, decoded) => {
         if (err) return res.status(403).send({ error: "Forbidden" });
 
-        req.user = decoded; // put decoded info in req
+        req.decoded = decoded; // put decoded info in req
         next();
     });
 }
@@ -54,12 +54,10 @@ async function run() {
         // generate jwt token
         app.post("/api/jwt", async (req, res) => {
             const user = req.body.email; // should contain at least email
-            console.log(user)
             try {
-                const token = jwt.sign({user}, secret, {
+                const token = jwt.sign({ user }, secret, {
                     expiresIn: "7d", // optional: token expires in 7 days
                 });
-                console.log(token)
                 res.send({ token });
 
             } catch (error) {
@@ -126,7 +124,9 @@ async function run() {
         // get my products added by vendor
         app.get("/products", verifyToken, async (req, res) => {
             const vendorEmail = req.query.email;
-
+            if (vendorEmail !== req.decoded.user) {
+                return res.status(403).send({ error: "Forbidden" });
+            }
             try {
                 const products = await productsCollection
                     .find({ vendorEmail: vendorEmail })
@@ -137,6 +137,77 @@ async function run() {
             } catch (error) {
                 console.error("Error fetching vendor products:", error);
                 res.status(500).json({ error: "Failed to fetch vendor products" });
+            }
+        });
+
+        // get single product by id
+        app.get('/products/:id', async (req, res) => {
+            const productId = req.params.id;
+
+            console.log(productId)
+
+            if (!ObjectId.isValid(productId)) {
+                return res.status(400).json({ error: "Invalid product ID" });
+            }
+
+            try {
+                const product = await productsCollection.findOne({ _id: new ObjectId(productId) });
+
+                if (!product) {
+                    return res.status(404).json({ error: "Product not found" });
+                }
+
+                res.json(product);
+            } catch (error) {
+                console.error("Error fetching product by ID:", error);
+                res.status(500).json({ error: "Internal server error" });
+            }
+        });
+
+        // update product api
+        app.put("/products/:id", async (req, res) => {
+            try {
+                const productId = req.params.id;
+                const {
+                    marketName,
+                    marketDescription,
+                    date,
+                    itemName,
+                    pricePerUnit,
+                    itemDescription,
+                    image,
+                } = req.body;
+
+                const query = { _id: new ObjectId(productId) };
+
+                const updateDoc = {
+                    $set: {
+                        marketName,
+                        marketDescription,
+                        date,
+                        itemName,
+                        pricePerUnit,
+                        itemDescription,
+                        image,
+                    },
+                    $push: {
+                        prices: {
+                            date: date,
+                            price: parseFloat(pricePerUnit),
+                        },
+                    },
+                };
+
+                const result = await productsCollection.updateOne(query, updateDoc);
+
+                if (result.modifiedCount > 0) {
+                    res.send(result);
+                } else {
+                    res.status(404).send({ error: "Product not found or no changes made" });
+                }
+            } catch (error) {
+                console.error("Update Error:", error);
+                res.status(500).send({ error: "Internal Server Error" });
             }
         });
 
