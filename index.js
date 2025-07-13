@@ -5,11 +5,31 @@ const { MongoClient, ServerApiVersion } = require('mongodb');
 const app = express()
 const port = process.env.PORT || 3000;
 
+const jwt = require("jsonwebtoken");
+const secret = "sghsifgnfgnfdknfdklgfngkl";
+
 // Load environment variables from .env file
 dotenv.config();
 
 app.use(cors())
 app.use(express.json());
+
+// verify jwt token
+function verifyToken(req, res, next) {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader) return res.status(401).send({ error: "Unauthorized" });
+
+    const token = authHeader.split(" ")[1];
+
+    jwt.verify(token, secret, (err, decoded) => {
+        if (err) return res.status(403).send({ error: "Forbidden" });
+
+        req.user = decoded; // put decoded info in req
+        next();
+    });
+}
+
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.x4uxqpq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -30,6 +50,24 @@ async function run() {
         const db = client.db('bikroy_haat'); // database name
         const usersCollection = db.collection('users');
         const productsCollection = db.collection('products');
+
+        // generate jwt token
+        app.post("/api/jwt", async (req, res) => {
+            const user = req.body.email; // should contain at least email
+            console.log(user)
+            try {
+                const token = jwt.sign({user}, secret, {
+                    expiresIn: "7d", // optional: token expires in 7 days
+                });
+                console.log(token)
+                res.send({ token });
+
+            } catch (error) {
+                console.log(error)
+                res.status(500).send({ error: "Token generation failed" });
+            }
+        });
+
 
         // add user data to DB
         app.post("/users", async (req, res) => {
@@ -82,6 +120,23 @@ async function run() {
             } catch (err) {
                 console.error("Failed to insert product:", err);
                 res.status(500).json({ error: "Internal Server Error" });
+            }
+        });
+
+        // get my products added by vendor
+        app.get("/products", verifyToken, async (req, res) => {
+            const vendorEmail = req.query.email;
+
+            try {
+                const products = await productsCollection
+                    .find({ vendorEmail: vendorEmail })
+                    .sort({ createdAt: -1 }) // optional: newest first
+                    .toArray();
+
+                res.status(200).send(products);
+            } catch (error) {
+                console.error("Error fetching vendor products:", error);
+                res.status(500).json({ error: "Failed to fetch vendor products" });
             }
         });
 
