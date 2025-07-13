@@ -50,6 +50,7 @@ async function run() {
         const db = client.db('bikroy_haat'); // database name
         const usersCollection = db.collection('users');
         const productsCollection = db.collection('products');
+        const advertisementsCollection = db.collection('advertisements');
 
         // generate jwt token
         app.post("/api/jwt", async (req, res) => {
@@ -118,6 +119,34 @@ async function run() {
             } catch (err) {
                 console.error("Failed to insert product:", err);
                 res.status(500).json({ error: "Internal Server Error" });
+            }
+        });
+
+        // insert advertisements to MongoDB
+        app.post("/advertisements", async (req, res) => {
+            try {
+                const data = req.body;
+
+                // if (!ad.title || !ad.description || !ad.image) {
+                //     return res.status(400).json({ error: "Missing required fields" });
+                // }
+
+                // Default status to pending if not provided
+                const ad = {
+                    ...data,
+                    status: "pending",
+                    createdAt: new Date()
+                }
+
+                const result = await advertisementsCollection.insertOne(ad);
+
+                res.status(201).json({
+                    message: "Advertisement added successfully",
+                    insertedId: result.insertedId,
+                });
+            } catch (error) {
+                console.error("Error adding advertisement:", error);
+                res.status(500).json({ error: "Failed to add advertisement" });
             }
         });
 
