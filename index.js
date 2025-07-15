@@ -5,11 +5,14 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express()
 const port = process.env.PORT || 3000;
 
-const jwt = require("jsonwebtoken");
-const secret = "sghsifgnfgnfdknfdklgfngkl";
-
 // Load environment variables from .env file
 dotenv.config();
+
+// Stripe Payment Intent and Secret
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+const jwt = require("jsonwebtoken");
+const secret = "sghsifgnfgnfdknfdklgfngkl";
 
 app.use(cors())
 app.use(express.json());
@@ -51,6 +54,25 @@ async function run() {
         const usersCollection = db.collection('users');
         const productsCollection = db.collection('products');
         const advertisementsCollection = db.collection('advertisements');
+        const reviewsCollection = db.collection('reviews');
+
+        // Strip Payment Instent API
+        app.post("/create-payment-intent", async (req, res) => {
+            const { amount } = req.body;
+
+            try {
+                const paymentIntent = await stripe.paymentIntents.create({
+                    amount: amount * 100, // Stripe uses smallest currency unit (e.g. cents)
+                    currency: "usd", // or "bdt" if available for your account
+                    payment_method_types: ['card']
+                });
+
+                res.send({ clientSecret: paymentIntent.client_secret });
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ error: "Payment intent creation failed" });
+            }
+        });
 
         // generate jwt token
         app.post("/api/jwt", async (req, res) => {
@@ -150,6 +172,32 @@ async function run() {
             }
         });
 
+        // insert user review in database
+        app.post("/reviews", async (req, res) => {
+            const { name, review, rating, productId } = req.body;
+            const today = new Date().toISOString().split("T")[0];
+
+            try {
+                const newReview = {
+                    name,
+                    review,
+                    productId,
+                    rating: Number(rating),
+                    createdAt: today,
+                };
+
+                const result = await reviewsCollection.insertOne(newReview);
+
+                res.status(201).json({
+                    message: "Review submitted successfully",
+                    insertedId: result.insertedId,
+                });
+            } catch (error) {
+                console.error("Failed to insert review:", error);
+                res.status(500).json({ message: "Server error" });
+            }
+        });
+
         // get my products added by vendor
         app.get("/products", verifyToken, async (req, res) => {
             const vendorEmail = req.query.email;
@@ -170,7 +218,7 @@ async function run() {
         });
 
         // get single product by id
-        app.get('/products/:id', async (req, res) => {
+        app.get('/products/:id', verifyToken, async (req, res) => {
             const productId = req.params.id;
 
             console.log(productId)
@@ -186,12 +234,87 @@ async function run() {
                     return res.status(404).json({ error: "Product not found" });
                 }
 
-                res.json(product);
+                res.send(product);
             } catch (error) {
                 console.error("Error fetching product by ID:", error);
                 res.status(500).json({ error: "Internal server error" });
             }
         });
+
+        // get ads by vendor email
+        app.get("/advertisements", verifyToken, async (req, res) => {
+            try {
+                const email = req.query.email;
+
+                if (email !== req.decoded.user) {
+                    return res.status(403).send({ error: "Forbidden" });
+                }
+
+                if (!email) {
+                    return res.status(400).send({ error: "Email query is required" });
+                }
+
+                const ad = await advertisementsCollection.find({ vendorEmail: email }).toArray();
+
+                if (!ad) {
+                    return res.status(404).send({ error: "Advertisement not found for this email" });
+                }
+
+                res.send(ad);
+            } catch (error) {
+                console.error("Failed to fetch advertisement:", error);
+                res.status(500).send({ error: "Internal server error" });
+            }
+        });
+
+        // get 6 product by different market date 
+        // GET: /api/products/cards
+        app.get("/card/products", async (req, res) => {
+            try {
+                const today = new Date().toISOString().split("T")[0];
+
+                const result = await productsCollection.find({
+                    status: "pending",
+                    // date: { $lte: today }  // Only products for today or earlier
+                })
+                    .sort({ date: -1 })  // Sort by date descending (most recent first)
+                    .limit(6)            // Limit to 6 documents
+                    .toArray();
+
+                console.log(result)
+
+                // Convert _id ObjectId to string
+                const formattedResult = result.map(product => ({
+                    ...product,
+                    _id: product._id.toString()
+                }));
+
+                res.send(formattedResult);
+            } catch (error) {
+                console.error("Failed to fetch product cards", error);
+                res.status(500).send({ error: "Failed to fetch product cards" });
+            }
+        });
+
+        // get review by product id
+        app.get("/reviews", async (req, res) => {
+            const productId = req.query.productId;
+
+            if (!productId) {
+                return res.status(400).json({ error: "Missing productId in query" });
+            }
+
+            try {
+                const reviews = await reviewsCollection.find({ productId }).sort({ createdAt: -1 }).toArray();
+
+                res.status(200).send(reviews);
+            } catch (error) {
+                console.error("Failed to get reviews:", error);
+                console.log(error.stack)
+                res.status(500).json({ error: "Failed to retrieve reviews" });
+            }
+        });
+
 
         // update product api
         app.put("/products/:id", async (req, res) => {
@@ -239,6 +362,56 @@ async function run() {
                 res.status(500).send({ error: "Internal Server Error" });
             }
         });
+
+        // update ads data in DB
+        // Assuming you're using Express and MongoDB client
+        app.put("/advertisements/:id", async (req, res) => {
+            const { id } = req.params;
+            const updatedData = req.body;
+
+            try {
+                const result = await
+                    advertisementsCollection.updateOne(
+                        { _id: new ObjectId(id) },
+                        {
+                            $set: {
+                                title: updatedData.title,
+                                description: updatedData.description,
+                                image: updatedData.image,
+                            },
+                        }
+                    );
+
+                if (result.modifiedCount > 0) {
+                    res.send({ success: true, message: "Ad updated", modifiedCount: result.modifiedCount });
+                } else {
+                    res.status(404).send({ success: false, message: "No ad found or data unchanged" });
+                }
+            } catch (error) {
+                console.error("Failed to update ad:", error);
+                res.status(500).send({ success: false, error: "Internal Server Error" });
+            }
+        });
+
+
+        // delete ads api
+        app.delete("/advertisements/:id", async (req, res) => {
+            const { id } = req.params;
+
+            try {
+                const result = await advertisementsCollection.deleteOne({ _id: new ObjectId(id) });
+
+                if (result.deletedCount > 0) {
+                    res.send({ success: true, message: "Advertisement deleted successfully." });
+                } else {
+                    res.status(404).send({ success: false, message: "Advertisement not found." });
+                }
+            } catch (error) {
+                console.error("Error deleting advertisement:", error);
+                res.status(500).send({ success: false, error: "Internal Server Error" });
+            }
+        });
+
 
 
         // Send a ping to confirm a successful connection
