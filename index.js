@@ -2,6 +2,7 @@ const express = require('express')
 var cors = require('cors')
 const dotenv = require('dotenv');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const { nanoid } = require('nanoid');
 const app = express()
 const port = process.env.PORT || 3000;
 
@@ -55,6 +56,23 @@ async function run() {
         const productsCollection = db.collection('products');
         const advertisementsCollection = db.collection('advertisements');
         const reviewsCollection = db.collection('reviews');
+        const ordersCollection = db.collection('orders');
+        const watchlistCollection = db.collection('orders');
+
+        // generate jwt token
+        app.post("/api/jwt", async (req, res) => {
+            const user = req.body.email; // should contain at least email
+            try {
+                const token = jwt.sign({ user }, secret, {
+                    expiresIn: "7d", // optional: token expires in 7 days
+                });
+                res.send({ token });
+
+            } catch (error) {
+                console.log(error)
+                res.status(500).send({ error: "Token generation failed" });
+            }
+        });
 
         // Strip Payment Instent API
         app.post("/create-payment-intent", async (req, res) => {
@@ -73,22 +91,6 @@ async function run() {
                 res.status(500).json({ error: "Payment intent creation failed" });
             }
         });
-
-        // generate jwt token
-        app.post("/api/jwt", async (req, res) => {
-            const user = req.body.email; // should contain at least email
-            try {
-                const token = jwt.sign({ user }, secret, {
-                    expiresIn: "7d", // optional: token expires in 7 days
-                });
-                res.send({ token });
-
-            } catch (error) {
-                console.log(error)
-                res.status(500).send({ error: "Token generation failed" });
-            }
-        });
-
 
         // add user data to DB
         app.post("/users", async (req, res) => {
@@ -195,6 +197,69 @@ async function run() {
             } catch (error) {
                 console.error("Failed to insert review:", error);
                 res.status(500).json({ message: "Server error" });
+            }
+        });
+
+        // save cutomer orders data in DB
+        app.post('/orders', async (req, res) => {
+            try {
+                const paymentData = req.body;
+
+                // Generate order ID
+                const orderId = 'ORD-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + nanoid(6);
+
+                const finalData = {
+                    ...paymentData,
+                    orderId,
+                    paymentStatus: 'succeess'
+                };
+
+                const result = await ordersCollection.insertOne(finalData);
+                res.status(200).send({
+                    success: true,
+                    insertedId: result.insertedId,
+                    orderId, // you can return it to show user
+                });
+            } catch (error) {
+                console.error('Error saving payment:', error);
+                res.status(500).send({ success: false });
+            }
+        });
+
+        // POST API to add a product to the watchlist
+        app.post('/watchlist', async (req, res) => {
+            const watchlistData = req.body;
+
+            // Basic validation
+            if (!watchlistData) {
+                return res.status(400).json({ message: 'Missing Watchlist Data, Failed To Save!' });
+            }
+
+            try {
+                // Optional: Check if the product is already in the user's watchlist
+                // This prevents duplicate entries for the same user and product
+                const existingEntry = await watchlistCollection.findOne({
+                    user: watchlistData.user,
+                    productId: watchlistData.productId
+                });
+
+                if (existingEntry) {
+                    return res.status(409).json({ message: 'Product already in watchlist' });
+                }
+
+                // Insert the document into the collection
+                const result = await watchlistCollection.insertOne(watchlistData);
+
+                // Respond with success
+                res.status(201).send({
+                    message: 'Product added to watchlist successfully!',
+                    insertedId: result.insertedId,
+                    data: watchlistData
+                });
+
+            } catch (error) {
+                console.error('Error adding to watchlist:', error);
+                res.status(500).send({ message: 'Failed to add product to watchlist', error: error.message });
             }
         });
 
