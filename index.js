@@ -57,7 +57,7 @@ async function run() {
         const advertisementsCollection = db.collection('advertisements');
         const reviewsCollection = db.collection('reviews');
         const ordersCollection = db.collection('orders');
-        const watchlistCollection = db.collection('orders');
+        const watchlistCollection = db.collection('watchlists');
 
         // generate jwt token
         app.post("/api/jwt", async (req, res) => {
@@ -263,6 +263,36 @@ async function run() {
             }
         });
 
+        // GET API to retrieve all users with optional role filtering
+        app.get('/users', async (req, res) => {
+            const { role } = req.query; // Get the 'role' from query parameters (e.g., /users?role=vendor)
+
+            let query = {}; // Initialize an empty query object
+
+            // If a role is provided, add it to the query filter
+            if (role) {
+                query.role = role; // Assuming user documents have a 'role' field (e.g., 'user', 'vendor', 'admin')
+            }
+
+            try {
+                const allUsers = await usersCollection.find(query).toArray();
+
+                if (allUsers.length === 0 && role) {
+                    // If a role was specified but no users found for that role
+                    return res.status(200).json([]); // Return empty array, not 404, as valid query might yield no results
+                } else if (allUsers.length === 0) {
+                    // If no users at all in the database
+                    return res.status(200).json([]); // Still return an empty array
+                }
+
+                res.status(200).json(allUsers);
+
+            } catch (error) {
+                console.error('Error fetching users:', error);
+                res.status(500).json({ message: 'Failed to retrieve users', error: error.message });
+            }
+        });
+
         // get my products added by vendor
         app.get("/products", verifyToken, async (req, res) => {
             const vendorEmail = req.query.email;
@@ -379,6 +409,45 @@ async function run() {
                 res.status(500).json({ error: "Failed to retrieve reviews" });
             }
         });
+
+        // get watchlist filtered by user email
+        app.get('/watchlists', verifyToken, async (req, res) => {
+            // Get the userEmail from query parameters (e.g., /api/watchlists?userEmail=test@example.com)
+            const userEmail = req.query.email;
+
+            // Basic validation
+            if (!userEmail) {
+                return res.status(400).json({ message: 'User email is required as a query parameter (e.g., ?userEmail=your@email.com)' });
+            }
+
+            try {
+                const userWatchlists = await watchlistCollection.find({ user: userEmail }).toArray();
+
+                if (userWatchlists.length === 0) {
+                    return res.status(404).json({ message: 'No watchlists found for this user email.' });
+                }
+
+                res.status(200).send(userWatchlists);
+
+            } catch (error) {
+                console.error('Error fetching user watchlists:', error);
+                res.status(500).send({ message: 'Failed to retrieve user watchlists', error: error.message });
+            }
+        });
+
+        app.get('/orders', verifyToken, async (req, res) => {
+            const userEmail = req.query.email;
+            try {
+                const orderLists = await ordersCollection.find({ userEmail }).toArray();
+                if (orderLists.length === 0) {
+                    return res.status(404).json({ message: 'No orders found for this user.' });
+                }
+                res.status(200).send(orderLists);
+            } catch (error) {
+                console.error('Error fetching user order list:', error);
+                res.status(500).send({ message: 'Failed to retrieve user orders', error: error.message });
+            }
+        })
 
 
         // update product api
