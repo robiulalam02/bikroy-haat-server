@@ -536,6 +536,35 @@ async function run() {
             }
         });
 
+        // PATCH API to update a user's role by ID
+        app.patch('/users/:id', async (req, res) => {
+            const { id } = req.params; // Get user ID from URL parameters
+            const { role } = req.body; // Get new role from request body
+
+            if (!role || !['user', 'vendor', 'admin'].includes(role)) {
+                return res.status(400).json({ message: 'Invalid role provided.' });
+            }
+
+            try {
+                const result = await usersCollection.updateOne(
+                    { _id: new ObjectId(id) }, // Find the user by ID
+                    { $set: { role: role } }    // Set the new role
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ message: 'User not found.' });
+                }
+                if (result.modifiedCount === 0) {
+                    return res.status(200).json({ message: 'User role already set to this value or no changes made.' });
+                }
+
+                res.status(200).json({ message: 'User role updated successfully!', userId: id, newRole: role });
+
+            } catch (error) {
+                console.error('Error updating user role:', error);
+                res.status(500).json({ message: 'Failed to update user role', error: error.message });
+            }
+        });
 
         // delete ads api
         app.delete("/advertisements/:id", async (req, res) => {
