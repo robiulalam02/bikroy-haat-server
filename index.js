@@ -265,13 +265,22 @@ async function run() {
 
         // GET API to retrieve all users with optional role filtering
         app.get('/users', async (req, res) => {
-            const { role } = req.query; // Get the 'role' from query parameters (e.g., /users?role=vendor)
+            const { role, search } = req.query; // Get the 'role' from query parameters (e.g., /users?role=vendor)
 
             let query = {}; // Initialize an empty query object
 
             // If a role is provided, add it to the query filter
             if (role) {
                 query.role = role; // Assuming user documents have a 'role' field (e.g., 'user', 'vendor', 'admin')
+            }
+
+            // Apply Seaerch Filter (if provided)
+            if (search) {
+                const searchRegExp = new RegExp(search, 'i'); // Case-insensitive regex search
+                query.$or = [ // Use $or to search across multiple fields
+                    { name: searchRegExp },
+                    { email: searchRegExp }
+                ];
             }
 
             try {
