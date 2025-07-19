@@ -321,6 +321,20 @@ async function run() {
             }
         });
 
+
+        // GET API to retrieve all products (Admin)
+        app.get('/all-products', async (req, res) => {
+            try {
+                const allProducts = await productsCollection.find({}).toArray(); // Fetch all products
+
+                res.status(200).send(allProducts);
+
+            } catch (error) {
+                console.error('Error fetching products:', error);
+                res.status(500).send({ message: 'Failed to retrieve products', error: error.message });
+            }
+        });
+
         // get single product by id
         app.get('/products/:id', verifyToken, async (req, res) => {
             const productId = req.params.id;
