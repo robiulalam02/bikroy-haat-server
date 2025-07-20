@@ -580,6 +580,58 @@ async function run() {
             }
         });
 
+        // PATCH API to update product status (approve/reject/pending)
+        app.patch('/products/:id/status', async (req, res) => {
+            const { id } = req.params;   // Get the product ID from the URL parameters
+            const { status, rejectionReason } = req.body; // Get the new status from the request body
+
+            // Basic validation for ObjectId format
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).json({ message: 'Invalid product ID format.' });
+            }
+
+            // Validate the incoming status value
+            const validStatuses = ['pending', 'approved', 'rejected'];
+            if (!status || !validStatuses.includes(status)) {
+                return res.status(400).json({ message: `Invalid status provided. Must be one of: ${validStatuses.join(', ')}.` });
+            }
+
+            // If status is 'rejected', ensure a rejectionReason is provided
+            if (status === 'rejected' && (!rejectionReason || typeof rejectionReason !== 'string' || rejectionReason.trim() === '')) {
+                return res.status(400).json({ message: 'Rejection reason is required when setting status to "rejected".' });
+            }
+
+            try {
+                let updateFields = { status: status };
+
+                // If status is rejected, store the reason.
+                // If status is changed *from* rejected to something else, clear the reason.
+                if (status === 'rejected') {
+                    updateFields.rejectionReason = rejectionReason.trim();
+                } else {
+                    updateFields.rejectionReason = null; // Clear reason if status is not rejected
+                }
+
+                const result = await productsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: updateFields }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ message: 'Product not found.' });
+                }
+                if (result.modifiedCount === 0) {
+                    return res.status(200).json({ message: `Product status is already '${status}' and reason is consistent. No changes made.`, productId: id, currentStatus: status });
+                }
+
+                res.status(200).json({ message: `Product status updated to '${status}' successfully!`, productId: id, newStatus: status });
+
+            } catch (error) {
+                console.error('Error updating product status:', error);
+                res.status(500).json({ message: 'Failed to update product status', error: error.message });
+            }
+        });
+
         // delete ads api
         app.delete("/advertisements/:id", async (req, res) => {
             const { id } = req.params;
@@ -598,6 +650,32 @@ async function run() {
             }
         });
 
+        // DELETE API to remove a product by its ID
+        app.delete('/products/:id', async (req, res) => {
+            const { id } = req.params; // Get the product ID from the URL parameters
+
+            // Basic validation for ObjectId format (optional but recommended)
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).json({ message: 'Invalid product ID format.' });
+            }
+
+            try {
+                const result = await productsCollection.deleteOne({ _id: new ObjectId(id) });
+
+                if (result.deletedCount === 0) {
+                    // If no document was deleted, it means the product with that ID wasn't found
+                    return res.status(404).json({ message: 'Product not found.' });
+                }
+
+                // Success response
+                res.status(200).json({ message: 'Product deleted successfully!', productId: id });
+
+            } catch (error) {
+                console.error('Error deleting product:', error);
+                // Generic server error response
+                res.status(500).json({ message: 'Failed to delete product', error: error.message });
+            }
+        });
 
 
         // Send a ping to confirm a successful connection
