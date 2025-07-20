@@ -385,6 +385,17 @@ async function run() {
             }
         });
 
+        // GET all advertisements (Admin)
+        app.get('/allAds', async (req, res) => {
+            try {
+                const advertisements = await advertisementsCollection.find({}).toArray();
+                res.status(200).send(advertisements);
+            } catch (error) {
+                console.error('Error fetching advertisements:', error);
+                res.status(500).send({ message: 'Failed to fetch advertisements', error: error.message });
+            }
+        });
+
         // get 6 product by different market date 
         // GET: /api/products/cards
         app.get("/card/products", async (req, res) => {
@@ -583,7 +594,7 @@ async function run() {
         // PATCH API to update product status (approve/reject/pending)
         app.patch('/products/:id/status', async (req, res) => {
             const { id } = req.params;   // Get the product ID from the URL parameters
-            const { status, rejectionReason } = req.body; // Get the new status from the request body
+            const { status, rejectionReason, feedback } = req.body; // Get the new status from the request body
 
             // Basic validation for ObjectId format
             if (!ObjectId.isValid(id)) {
@@ -608,8 +619,10 @@ async function run() {
                 // If status is changed *from* rejected to something else, clear the reason.
                 if (status === 'rejected') {
                     updateFields.rejectionReason = rejectionReason.trim();
+                    updateFields.feedback = feedback ? feedback.trim() : null;
                 } else {
-                    updateFields.rejectionReason = null; // Clear reason if status is not rejected
+                    updateFields.rejectionReason = null;
+                    updateFields.feedback = null;
                 }
 
                 const result = await productsCollection.updateOne(
@@ -629,6 +642,41 @@ async function run() {
             } catch (error) {
                 console.error('Error updating product status:', error);
                 res.status(500).json({ message: 'Failed to update product status', error: error.message });
+            }
+        });
+
+        // PATCH update advertisement status (approve/reject/pending)
+        app.patch('/advertisements/:id/status', async (req, res) => {
+            const { id } = req.params;
+            const { status } = req.body; // 'approved', 'rejected', 'pending'
+
+            if (!ObjectId.isValid(id)) {
+                return res.status(400).json({ message: 'Invalid advertisement ID format.' });
+            }
+
+            const validStatuses = ['pending', 'approved', 'rejected']; // Define your valid statuses
+            if (!status || !validStatuses.includes(status)) {
+                return res.status(400).json({ message: `Invalid status provided. Must be one of: ${validStatuses.join(', ')}.` });
+            }
+
+            try {
+                const result = await advertisementsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { status: status } }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ message: 'Advertisement not found.' });
+                }
+                if (result.modifiedCount === 0) {
+                    return res.status(200).json({ message: `Advertisement status is already '${status}'. No changes made.`, advertisementId: id, currentStatus: status });
+                }
+
+                res.status(200).send({ message: `Advertisement status updated to '${status}' successfully!`, advertisementId: id, newStatus: status });
+
+            } catch (error) {
+                console.error('Error updating advertisement status:', error);
+                res.status(500).send({ message: 'Failed to update advertisement status', error: error.message });
             }
         });
 
