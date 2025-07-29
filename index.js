@@ -6,7 +6,6 @@ const { nanoid } = require('nanoid');
 const app = express()
 const port = process.env.PORT || 3000;
 
-// Load environment variables from .env file
 dotenv.config();
 
 // Stripe Payment Intent and Secret
@@ -17,6 +16,7 @@ const secret = "sghsifgnfgnfdknfdklgfngkl";
 
 app.use(cors())
 app.use(express.json());
+
 
 // verify jwt token
 function verifyToken(req, res, next) {
@@ -32,6 +32,27 @@ function verifyToken(req, res, next) {
         req.decoded = decoded; // put decoded info in req
         next();
     });
+};
+
+// verify admin
+const verifyAdmin = (req, res, next) => {
+    const decoded = req.decoded;
+
+    if (!decoded || decoded.role !== "admin") {
+        return res.status(403).send({ error: "Forbidden Access" });
+    }
+
+    next();
+}
+// verify admin
+const verifyVendor = (req, res, next) => {
+    const decoded = req.decoded;
+
+    if (!decoded || decoded.role !== "vendor") {
+        return res.status(403).send({ error: "Forbidden Access" });
+    }
+
+    next();
 }
 
 
@@ -48,7 +69,7 @@ const client = new MongoClient(uri, {
 async function run() {
     try {
         // Connect the client to the server	(optional starting in v4.7)
-        await client.connect();
+        // await client.connect();
 
         // create collections 
         const db = client.db('bikroy_haat'); // database name
@@ -61,15 +82,16 @@ async function run() {
 
         // generate jwt token
         app.post("/api/jwt", async (req, res) => {
-            const user = req.body.email; // should contain at least email
+            const { email } = req.body; // should contain at least email
             try {
-                const token = jwt.sign({ user }, secret, {
+                const user = await usersCollection.findOne({ email });
+                const token = jwt.sign({ user: email, role: user.role }, secret, {
                     expiresIn: "7d", // optional: token expires in 7 days
                 });
                 res.send({ token });
 
             } catch (error) {
-                console.log(error)
+                // console.log(error)
                 res.status(500).send({ error: "Token generation failed" });
             }
         });
@@ -124,30 +146,39 @@ async function run() {
             res.status(201).json({ message: "User added", insertedId: result.insertedId });
         });
 
-        // add products data tp DB & products API
-        app.post("/products", async (req, res) => {
+        app.post("/products", verifyToken, verifyVendor, async (req, res) => {
             try {
                 const product = req.body;
 
-                // Add a timestamp and set default status
                 product.status = "pending";
                 product.createdAt = new Date();
 
+                // Format each price entry's date as 'YYYY-MM-DD'
+                product.prices = product.prices.map(entry => {
+                    const dateObj = new Date(entry.date);
+                    const formattedDate = dateObj.toISOString().split("T")[0]; // "YYYY-MM-DD"
+                    return {
+                        date: formattedDate,
+                        price: parseFloat(entry.price)
+                    };
+                });
+
                 const result = await productsCollection.insertOne(product);
 
-                res.status(201).json({
+                res.status(201).send({
                     message: "Product added successfully",
                     insertedId: result.insertedId,
                 });
-                console.log(result.insertedId)
             } catch (err) {
                 console.error("Failed to insert product:", err);
-                res.status(500).json({ error: "Internal Server Error" });
+                res.status(500).send({ error: "Internal Server Error" });
             }
         });
 
+
+
         // insert advertisements to MongoDB
-        app.post("/advertisements", async (req, res) => {
+        app.post("/advertisements", verifyToken, verifyVendor, async (req, res) => {
             try {
                 const data = req.body;
 
@@ -175,7 +206,7 @@ async function run() {
         });
 
         // insert user review in database
-        app.post("/reviews", async (req, res) => {
+        app.post("/reviews", verifyToken, async (req, res) => {
             const { name, review, rating, productId } = req.body;
             const today = new Date().toISOString().split("T")[0];
 
@@ -201,7 +232,7 @@ async function run() {
         });
 
         // save cutomer orders data in DB
-        app.post('/orders', async (req, res) => {
+        app.post('/orders', verifyToken, async (req, res) => {
             try {
                 const paymentData = req.body;
 
@@ -227,7 +258,7 @@ async function run() {
         });
 
         // POST API to add a product to the watchlist
-        app.post('/watchlist', async (req, res) => {
+        app.post('/watchlist', verifyToken, async (req, res) => {
             const watchlistData = req.body;
 
             // Basic validation
@@ -263,38 +294,57 @@ async function run() {
             }
         });
 
-        // GET API to retrieve all users with optional role filtering
-        app.get('/users', async (req, res) => {
-            const { role, search } = req.query; // Get the 'role' from query parameters (e.g., /users?role=vendor)
-
-            let query = {}; // Initialize an empty query object
-
-            // If a role is provided, add it to the query filter
-            if (role) {
-                query.role = role; // Assuming user documents have a 'role' field (e.g., 'user', 'vendor', 'admin')
-            }
-
-            // Apply Seaerch Filter (if provided)
-            if (search) {
-                const searchRegExp = new RegExp(search, 'i'); // Case-insensitive regex search
-                query.$or = [ // Use $or to search across multiple fields
-                    { name: searchRegExp },
-                    { email: searchRegExp }
-                ];
-            }
-
+        app.get('/user/:email', async (req, res) => {
             try {
-                const allUsers = await usersCollection.find(query).toArray();
+                const { email } = req.params;
+                const user = await usersCollection.findOne({ email: email });
+                res.status(200).send(user);
+            } catch (error) {
+                console.error('Error fetching user:', error);
+                res.status(500).json({ message: 'Failed to retrieve user', error: error.message });
+            }
+        })
 
-                if (allUsers.length === 0 && role) {
-                    // If a role was specified but no users found for that role
-                    return res.status(200).json([]); // Return empty array, not 404, as valid query might yield no results
-                } else if (allUsers.length === 0) {
-                    // If no users at all in the database
-                    return res.status(200).json([]); // Still return an empty array
+        // GET API to retrieve all users with optional role filtering, searching, and pagination
+        app.get('/admin/users', verifyToken, verifyAdmin, async (req, res) => {
+            // console.log(req.decoded);
+            try {
+                const { role, search, page = 1, limit = 10 } = req.query;
+
+                const skip = (parseInt(page) - 1) * parseInt(limit);
+                const queryLimit = parseInt(limit);
+
+                let query = {};
+
+                // If a role is provided, add it to the query filter
+                if (role && role !== 'all') {
+                    query.role = role;
                 }
 
-                res.status(200).json(allUsers);
+                // Apply Search Filter (if provided)
+                if (search) {
+                    const searchRegExp = new RegExp(search, 'i');
+                    query.$or = [
+                        { name: searchRegExp },
+                        { email: searchRegExp }
+                    ];
+                }
+
+                // Get total count of users matching the filter (important for pagination)
+                const totalUsers = await usersCollection.countDocuments(query);
+
+                // Fetch users with pagination
+                const users = await usersCollection.find(query)
+                    .skip(skip)
+                    .limit(queryLimit)
+                    .toArray();
+
+                res.status(200).json({
+                    users,
+                    totalUsers,
+                    currentPage: parseInt(page),
+                    totalPages: Math.ceil(totalUsers / queryLimit)
+                });
 
             } catch (error) {
                 console.error('Error fetching users:', error);
@@ -302,8 +352,32 @@ async function run() {
             }
         });
 
+        // GET user role by email
+        app.get('/users/role/:email', async (req, res) => {
+            const { email } = req.params;
+
+            if (!email) {
+                return res.status(400).json({ message: 'Email parameter is required.' });
+            }
+
+            try {
+                const user = await usersCollection.findOne({ email: email });
+
+                if (!user) {
+                    // If user not found, return a default role (e.g., 'guest' or 'unregistered')
+                    return res.status(200).json({ role: 'guest', message: 'User not found, defaulting to guest role.' });
+                }
+
+                // Assuming the user document has a 'role' field
+                res.status(200).send({ role: user.role || 'user' }); // Default to 'user' if role field is missing
+            } catch (error) {
+                console.error('Error fetching user role:', error);
+                res.status(500).json({ message: 'Failed to fetch user role', error: error.message });
+            }
+        });
+
         // get my products added by vendor
-        app.get("/products", verifyToken, async (req, res) => {
+        app.get("/products/vendor", verifyToken, verifyVendor, async (req, res) => {
             const vendorEmail = req.query.email;
             if (vendorEmail !== req.decoded.user) {
                 return res.status(403).send({ error: "Forbidden" });
@@ -321,13 +395,102 @@ async function run() {
             }
         });
 
-
-        // GET API to retrieve all products (Admin)
-        app.get('/all-products', async (req, res) => {
+        // GET API to retrieve products for public view with filtering and sorting
+        app.get('/products', async (req, res) => {
             try {
-                const allProducts = await productsCollection.find({}).toArray(); // Fetch all products
+                const { sortBy, sortOrder, startDate, endDate } = req.query; // Removed page and limit
 
-                res.status(200).send(allProducts);
+                let query = { status: 'approved' }; // Public API only shows 'approved' products by default
+                let sortOptions = {};
+
+                // Date filtering (for 'createdAt' field)
+                if (startDate || endDate) {
+                    query.createdAt = {};
+                    if (startDate) {
+                        query.createdAt.$gte = new Date(startDate);
+                    }
+                    if (endDate) {
+                        const endOfDay = new Date(endDate);
+                        endOfDay.setHours(23, 59, 59, 999);
+                        query.createdAt.$lte = endOfDay;
+                    }
+                }
+
+                // Sorting Logic
+                if (sortBy === 'price') {
+                    const order = sortOrder === 'desc' ? -1 : 1;
+                    sortOptions.pricePerUnit = order;
+                } else if (sortBy === 'date') {
+                    const order = sortOrder === 'desc' ? -1 : 1;
+                    sortOptions.createdAt = order;
+                }
+
+                // Removed skip and limit from here
+                const products = await productsCollection.find(query)
+                    .sort(sortOptions)
+                    .toArray(); // Get all matching products
+
+                res.status(200).send(products); // Send just the array of products
+
+            } catch (error) {
+                console.error('Error fetching public products:', error);
+                res.status(500).send({ message: 'Failed to retrieve products', error: error.message });
+            }
+        });
+
+        // GET API to retrieve all products with filtering, sorting, and pagination
+        app.get('/admin/all-products', verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const { sortBy, sortOrder, startDate, endDate, status, page = 1, limit = 10 } = req.query; // Add page and limit
+
+                // console.log(limit)
+
+                const skip = (parseInt(page) - 1) * parseInt(limit); // Calculate how many documents to skip
+                const queryLimit = parseInt(limit); // Number of documents to return per page
+
+                let query = {};
+                let sortOptions = {};
+
+                // Date filtering
+                if (startDate || endDate) {
+                    query.createdAt = {};
+                    if (startDate) {
+                        query.createdAt.$gte = new Date(startDate);
+                    }
+                    if (endDate) {
+                        const endOfDay = new Date(endDate);
+                        endOfDay.setHours(23, 59, 59, 999);
+                        query.createdAt.$lte = endOfDay;
+                    }
+                }
+
+                // Status filtering
+                if (status && ['pending', 'approved', 'rejected'].includes(status)) {
+                    query.status = status;
+                }
+
+                // Sorting Logic
+                if (sortBy === 'price') {
+                    const order = sortOrder === 'desc' ? -1 : 1;
+                    sortOptions.pricePerUnit = order;
+                } else if (sortBy === 'date') {
+                    const order = sortOrder === 'desc' ? -1 : 1;
+                    sortOptions.createdAt = order;
+                }
+
+                const totalProducts = await productsCollection.countDocuments(query); // Get total count for pagination
+                const products = await productsCollection.find(query)
+                    .sort(sortOptions)
+                    .skip(skip)   // Apply skip for pagination
+                    .limit(queryLimit) // Apply limit for pagination
+                    .toArray();
+
+                res.status(200).send({
+                    products,
+                    totalProducts,
+                    currentPage: parseInt(page),
+                    totalPages: Math.ceil(totalProducts / queryLimit)
+                });
 
             } catch (error) {
                 console.error('Error fetching products:', error);
@@ -339,7 +502,7 @@ async function run() {
         app.get('/products/:id', verifyToken, async (req, res) => {
             const productId = req.params.id;
 
-            console.log(productId)
+            // console.log(productId)
 
             if (!ObjectId.isValid(productId)) {
                 return res.status(400).json({ error: "Invalid product ID" });
@@ -359,10 +522,20 @@ async function run() {
             }
         });
 
-        // get ads by vendor email
-        app.get("/advertisements", verifyToken, async (req, res) => {
+        // get all advertisement (public)
+        app.get('/advertisements', async (req, res) => {
             try {
-                const email = req.query.email;
+                const ads = await advertisementsCollection.find().toArray();
+                res.status(200).send(ads);
+            } catch (error) {
+                res.status(500).send({ success: false, message: 'Failed to fetch advertisements', error });
+            }
+        });
+
+        // get ads by vendor email
+        app.get("/vendor/advertisements", verifyToken, verifyVendor, async (req, res) => {
+            try {
+                const {email} = req.query;
 
                 if (email !== req.decoded.user) {
                     return res.status(403).send({ error: "Forbidden" });
@@ -386,7 +559,7 @@ async function run() {
         });
 
         // GET all advertisements (Admin)
-        app.get('/allAds', async (req, res) => {
+        app.get('/allAds', verifyToken, verifyAdmin, async (req, res) => {
             try {
                 const advertisements = await advertisementsCollection.find({}).toArray();
                 res.status(200).send(advertisements);
@@ -397,20 +570,20 @@ async function run() {
         });
 
         // get 6 product by different market date 
-        // GET: /api/products/cards
+        // GET: /products/cards
         app.get("/card/products", async (req, res) => {
             try {
                 const today = new Date().toISOString().split("T")[0];
 
                 const result = await productsCollection.find({
-                    status: "pending",
+                    status: "approved",
                     // date: { $lte: today }  // Only products for today or earlier
                 })
                     .sort({ date: -1 })  // Sort by date descending (most recent first)
                     .limit(6)            // Limit to 6 documents
                     .toArray();
 
-                console.log(result)
+                // console.log(result)
 
                 // Convert _id ObjectId to string
                 const formattedResult = result.map(product => ({
@@ -439,7 +612,7 @@ async function run() {
                 res.status(200).send(reviews);
             } catch (error) {
                 console.error("Failed to get reviews:", error);
-                console.log(error.stack)
+                // console.log(error.stack)
                 res.status(500).json({ error: "Failed to retrieve reviews" });
             }
         });
@@ -458,7 +631,7 @@ async function run() {
                 const userWatchlists = await watchlistCollection.find({ user: userEmail }).toArray();
 
                 if (userWatchlists.length === 0) {
-                    return res.status(404).json({ message: 'No watchlists found for this user email.' });
+                    return res.status(200).send([]);
                 }
 
                 res.status(200).send(userWatchlists);
@@ -473,19 +646,28 @@ async function run() {
             const userEmail = req.query.email;
             try {
                 const orderLists = await ordersCollection.find({ userEmail }).toArray();
-                if (orderLists.length === 0) {
-                    return res.status(404).json({ message: 'No orders found for this user.' });
-                }
+
                 res.status(200).send(orderLists);
             } catch (error) {
                 console.error('Error fetching user order list:', error);
                 res.status(500).send({ message: 'Failed to retrieve user orders', error: error.message });
             }
-        })
+        });
+
+        // GET all orders (Admin)
+        app.get('/allOrders', verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const orders = await ordersCollection.find({}).toArray();
+                res.status(200).send(orders);
+            } catch (error) {
+                console.error('Error fetching orders:', error);
+                res.status(500).send({ message: 'Failed to fetch orders', error: error.message });
+            }
+        });
 
 
         // update product api
-        app.put("/products/:id", async (req, res) => {
+        app.put("/products/:id", verifyToken, async (req, res) => {
             try {
                 const productId = req.params.id;
                 const {
@@ -532,8 +714,7 @@ async function run() {
         });
 
         // update ads data in DB
-        // Assuming you're using Express and MongoDB client
-        app.put("/advertisements/:id", async (req, res) => {
+        app.put("/advertisements/:id", verifyToken, verifyVendor, async (req, res) => {
             const { id } = req.params;
             const updatedData = req.body;
 
@@ -561,8 +742,45 @@ async function run() {
             }
         });
 
+        // PATCH /api/users/:id - Update user profile
+        app.patch('/user/:id', verifyToken, async (req, res) => {
+            const { id } = req.params; // Get user ID from URL parameters
+            const updates = {};
+
+            // Only allow specific fields to be updated
+            if (req.body.name !== undefined) {
+                updates.name = req.body.name;
+            }
+            if (req.body.phone !== undefined) {
+                updates.phone = req.body.phone;
+            }
+            if (req.body.location !== undefined) {
+                updates.location = req.body.location;
+            }
+            if (req.body.profilePhoto !== undefined) {
+                updates.profilePhoto = req.body.profilePhoto;
+            }
+
+            try {
+                const user = await usersCollection.updateOne({ _id: new ObjectId(id) }, { $set: updates })
+
+                if (!user) {
+                    return res.status(404).json({ message: 'User not found.' });
+                }
+
+                res.status(200).send(user);
+
+            } catch (error) {
+                // Handle Mongoose validation errors or other database errors
+                if (error.name === 'ValidationError') {
+                    return res.status(400).json({ message: error.message });
+                }
+                res.status(500).json({ message: 'Server error', error: error.message });
+            }
+        });
+
         // PATCH API to update a user's role by ID
-        app.patch('/users/:id', async (req, res) => {
+        app.patch('/admin/update-user-role/:id', verifyToken, verifyAdmin, async (req, res) => {
             const { id } = req.params; // Get user ID from URL parameters
             const { role } = req.body; // Get new role from request body
 
@@ -592,7 +810,7 @@ async function run() {
         });
 
         // PATCH API to update product status (approve/reject/pending)
-        app.patch('/products/:id/status', async (req, res) => {
+        app.patch('/products/:id/status', verifyToken, verifyAdmin, async (req, res) => {
             const { id } = req.params;   // Get the product ID from the URL parameters
             const { status, rejectionReason, feedback } = req.body; // Get the new status from the request body
 
@@ -646,7 +864,7 @@ async function run() {
         });
 
         // PATCH update advertisement status (approve/reject/pending)
-        app.patch('/advertisements/:id/status', async (req, res) => {
+        app.patch('/advertisements/:id/status', verifyToken, verifyAdmin, async (req, res) => {
             const { id } = req.params;
             const { status } = req.body; // 'approved', 'rejected', 'pending'
 
@@ -725,10 +943,28 @@ async function run() {
             }
         });
 
+        // Delete API for users Watchlist
+        app.delete("/watchlists/:id", async (req, res) => {
+            const { id } = req.params;
+
+            try {
+                const result = await watchlistCollection.deleteOne({ _id: new ObjectId(id) });
+
+                if (result.deletedCount > 0) {
+                    res.send({ success: true, message: "Product removed from watchlist ." });
+                } else {
+                    res.status(404).send({ success: false, message: "Product not found." });
+                }
+            } catch (error) {
+                console.error("Error deleting advertisement:", error);
+                res.status(500).send({ success: false, error: "Internal Server Error" });
+            }
+        });
+
 
         // Send a ping to confirm a successful connection
-        await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        // await client.db("admin").command({ ping: 1 });
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
         // Ensures that the client will close when you finish/error
         // await client.close();
