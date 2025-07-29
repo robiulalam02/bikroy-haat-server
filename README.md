@@ -5,7 +5,7 @@ This repository contains the server-side code for the "Daily Price Tracker for L
 The primary objective of this project is to provide a comprehensive platform for users to track and compare daily prices of essential items across different local markets. Vendors can update prices, while users can leverage the platform to view, track, and compare this data. The project also incorporates monetization options through product purchases and sponsored advertisements.
 
 ## Live URL 🌐
-[[Please insert your live server URL here](https://bikroy-haat-server.vercel.app/)]
+[[Server Side Live URL](https://bikroy-haat-server.vercel.app/)]
 
 ## Key Features ✨
 User Authentication & Authorization: Secure JWT-based authentication, Google social login, and Role-Based Access Control (RBAC) for users, vendors, and admins. 🔐
