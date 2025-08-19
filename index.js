@@ -34,27 +34,6 @@ function verifyToken(req, res, next) {
     });
 };
 
-// verify admin
-const verifyAdmin = (req, res, next) => {
-    const decoded = req.decoded;
-
-    if (!decoded || decoded.role !== "admin") {
-        return res.status(403).send({ error: "Forbidden Access" });
-    }
-
-    next();
-}
-// verify admin
-const verifyVendor = (req, res, next) => {
-    const decoded = req.decoded;
-
-    if (!decoded || decoded.role !== "vendor") {
-        return res.status(403).send({ error: "Forbidden Access" });
-    }
-
-    next();
-}
-
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.x4uxqpq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -80,12 +59,37 @@ async function run() {
         const ordersCollection = db.collection('orders');
         const watchlistCollection = db.collection('watchlists');
 
+        // verify admin
+        const verifyAdmin = async (req, res, next) => {
+            const { user } = req.decoded;
+
+            const userData = await usersCollection.findOne({ email: user });
+
+            if (!user || userData.role !== "admin") {
+                return res.status(403).send({ error: "Forbidden Access" });
+            }
+
+            next();
+        }
+        // verify admin
+        const verifyVendor = async (req, res, next) => {
+            const { user } = req.decoded;
+
+            const userData = await usersCollection.findOne({ email: user });
+
+            if (!user || userData.role !== "vendor") {
+                return res.status(403).send({ error: "Forbidden Access" });
+            }
+
+            next();
+        }
+
         // generate jwt token
         app.post("/api/jwt", async (req, res) => {
             const { email } = req.body; // should contain at least email
+            // console.log(email)
             try {
-                const user = await usersCollection.findOne({ email });
-                const token = jwt.sign({ user: email, role: user.role }, secret, {
+                const token = jwt.sign({ user: email }, secret, {
                     expiresIn: "7d", // optional: token expires in 7 days
                 });
                 res.send({ token });
@@ -207,12 +211,14 @@ async function run() {
 
         // insert user review in database
         app.post("/reviews", verifyToken, async (req, res) => {
-            const { name, review, rating, productId } = req.body;
+            const { name, review, rating, productId, email, image } = req.body;
             const today = new Date().toISOString().split("T")[0];
 
             try {
                 const newReview = {
                     name,
+                    email,
+                    image,
                     review,
                     productId,
                     rating: Number(rating),
@@ -525,7 +531,7 @@ async function run() {
         // get all advertisement (public)
         app.get('/advertisements', async (req, res) => {
             try {
-                const ads = await advertisementsCollection.find().toArray();
+                const ads = await advertisementsCollection.find({ status: 'approved' }).toArray();
                 res.status(200).send(ads);
             } catch (error) {
                 res.status(500).send({ success: false, message: 'Failed to fetch advertisements', error });
@@ -535,7 +541,7 @@ async function run() {
         // get ads by vendor email
         app.get("/vendor/advertisements", verifyToken, verifyVendor, async (req, res) => {
             try {
-                const {email} = req.query;
+                const { email } = req.query;
 
                 if (email !== req.decoded.user) {
                     return res.status(403).send({ error: "Forbidden" });
@@ -577,10 +583,11 @@ async function run() {
 
                 const result = await productsCollection.find({
                     status: "approved",
+                    $expr: { $lt: [{ $toInt: "$pricePerUnit" }, 100] }
                     // date: { $lte: today }  // Only products for today or earlier
                 })
-                    .sort({ date: -1 })  // Sort by date descending (most recent first)
-                    .limit(6)            // Limit to 6 documents
+                    .sort({ pricePerUnit: -1 })  // Sort by date descending (most recent first)
+                    .limit(8)            // Limit to 6 documents
                     .toArray();
 
                 // console.log(result)
@@ -597,6 +604,58 @@ async function run() {
                 res.status(500).send({ error: "Failed to fetch product cards" });
             }
         });
+
+        app.get("/recent-products", async (req, res) => {
+            try {
+                const today = new Date().toISOString().split("T")[0];
+
+                const result = await productsCollection.find({
+                    status: "approved",
+                    // date: { $lte: today }  // Only products for today or earlier
+                })
+                    .sort({ date: -1 })  // Sort by date descending (most recent first)
+                    .limit(8)            // Limit to 6 documents
+                    .toArray();
+
+                // console.log(result)
+
+                // Convert _id ObjectId to string
+                const formattedResult = result.map(product => ({
+                    ...product,
+                    _id: product._id.toString()
+                }));
+
+                res.send(formattedResult);
+            } catch (error) {
+                console.error("Failed to fetch product cards", error);
+                res.status(500).send({ error: "Failed to fetch product cards" });
+            }
+        });
+
+        app.get("/top-selling-products", async (req, res) => {
+            try {
+                const topSelling = await ordersCollection.aggregate([
+                    // 1. Group orders by productId and productName
+                    {
+                        $group: {
+                            _id: { productId: "$productId", productName: "$productName", marketName: "$marketName" },
+                            totalQuantity: { $sum: "$quantity" } // sum quantity
+                        }
+                    },
+                    // 2. Sort by totalQuantity descending
+                    { $sort: { totalQuantity: -1 } },
+                    // 3. Optional: limit to top 5 products
+                    { $limit: 5 }
+                ]).toArray();
+
+                res.send(topSelling);
+
+            } catch (error) {
+                console.error("Failed to fetch top-selling products:", error);
+                res.status(500).send({ error: "Failed to fetch top-selling products" });
+            }
+        });
+
 
         // get review by product id
         app.get("/reviews", async (req, res) => {
