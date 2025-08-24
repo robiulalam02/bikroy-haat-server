@@ -358,6 +358,223 @@ async function run() {
             }
         });
 
+        // ADMIN dashboard states
+        app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const totalUsers = await usersCollection.countDocuments({ role: "user" });
+                const totalVendors = await usersCollection.countDocuments({ role: "vendor" });
+                const totalProducts = await productsCollection.countDocuments();
+                const totalAdvertisements = await advertisementsCollection.countDocuments();
+                // const totalSales = await ordersCollection.aggregate([
+                //     { $match: { paymentStatus: { $in: ["succeess", "success"] } } },
+                //     { $group: { _id: null, total: { $sum: { $toInt: "$amount" } } } },
+                // ]);
+
+                const countOrders = await ordersCollection.countDocuments();
+
+                const totalSales = await ordersCollection.aggregate([
+                    { $group: { _id: null, total: { $sum: "$amount" } } }
+                ]).toArray();
+
+
+
+                res.json({
+                    totalUsers,
+                    totalVendors,
+                    totalProducts,
+                    totalAdvertisements,
+                    totalSales: totalSales[0]?.total || 0,
+                });
+            } catch (error) {
+                res.status(500).json({ message: "Error fetching stats", error });
+            }
+        });
+
+        // GET /admin/orders-per-month?last=12&successOnly=true&tz=%2B06:00
+        // Defaults: last=12 months, successOnly=true, timezone=+06:00 (Dhaka)
+        app.get("/admin/orders-per-month", verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const last = Math.max(1, parseInt(req.query.last || "12", 10));
+                const successOnly = (req.query.successOnly ?? "true") !== "false";
+                const tz = decodeURIComponent(req.query.tz || "+06:00"); // e.g. "+06:00"
+
+                // Build a JS date for the start of the first month included
+                const now = new Date();
+                const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)); // first of this month (UTC)
+                start.setUTCMonth(start.getUTCMonth() - (last - 1)); // go back last-1 months
+
+                // Helper to format YYYY-MM in Node
+                const ymLabel = (y, m) => `${y}-${String(m).padStart(2, "0")}`;
+
+                // Build a skeleton for the last N months so missing months become 0s
+                const buckets = [];
+                {
+                    const temp = new Date(start);
+                    for (let i = 0; i < last; i++) {
+                        const y = temp.getUTCFullYear();
+                        const m = temp.getUTCMonth() + 1; // 1-12
+                        buckets.push({ year: y, month: m, label: ymLabel(y, m), orders: 0, revenue: 0, qty: 0 });
+                        temp.setUTCMonth(temp.getUTCMonth() + 1);
+                    }
+                }
+                const bucketMap = new Map(buckets.map(b => [b.label, b]));
+
+                // Build the pipeline
+                const pipeline = [
+                    // 1) Normalize date → parsedDate (handles both Date and String)
+                    {
+                        $addFields: {
+                            parsedDate: {
+                                $cond: [
+                                    { $eq: [{ $type: "$date" }, "date"] },
+                                    "$date",
+                                    { $dateFromString: { dateString: "$date", timezone: tz } } // e.g. "2025-07-17"
+                                ]
+                            }
+                        }
+                    },
+                    // 2) Optional: only successful orders
+                    ...(successOnly
+                        ? [{
+                            $match: {
+                                $or: [
+                                    { status: "succeeded" },
+                                    { paymentStatus: "succeess" } // your stored typo
+                                ]
+                            }
+                        }]
+                        : []),
+                    // 3) Only last N months (match on parsedDate >= start)
+                    { $match: { parsedDate: { $gte: start } } },
+                    // 4) Extract year & month in your timezone (ensures correct month boundaries)
+                    {
+                        $addFields: {
+                            parts: { $dateToParts: { date: "$parsedDate", timezone: tz } }
+                        }
+                    },
+                    // 5) Group by (year, month)
+                    {
+                        $group: {
+                            _id: { y: "$parts.year", m: "$parts.month" },
+                            orders: { $sum: 1 },
+                            revenue: { $sum: { $toDouble: "$amount" } },
+                            qty: { $sum: { $toInt: "$quantity" } }
+                        }
+                    },
+                    // 6) Project clean fields
+                    {
+                        $project: {
+                            _id: 0,
+                            year: "$_id.y",
+                            month: "$_id.m",
+                            orders: 1,
+                            revenue: 1,
+                            qty: 1
+                        }
+                    },
+                    // 7) Sort chronological
+                    { $sort: { year: 1, month: 1 } }
+                ];
+
+                const rows = await ordersCollection.aggregate(pipeline).toArray();
+
+                // Merge real data into the fixed buckets
+                for (const r of rows) {
+                    const label = `${r.year}-${String(r.month).padStart(2, "0")}`;
+                    const b = bucketMap.get(label);
+                    if (b) {
+                        b.orders = r.orders;
+                        b.revenue = r.revenue;
+                        b.qty = r.qty;
+                    }
+                }
+
+                // Final array ordered oldest → newest
+                const result = buckets;
+
+                res.json({
+                    range: { months: last, start: ymLabel(buckets[0].year, buckets[0].month), end: buckets[buckets.length - 1].label, timezone: tz },
+                    successOnly,
+                    data: result
+                });
+            } catch (err) {
+                console.error(err);
+                res.status(500).json({ message: "Failed to compute orders per month", error: err.message });
+            }
+        });
+
+        // VENDOR dashboard stats
+        app.get("/vendor/stats", verifyToken, verifyVendor, async (req, res) => {
+            try {
+                const vendorEmail = req.query.email; // vendor's email passed as query ?email=vendor@mail.com
+                if (!vendorEmail) {
+                    return res.status(400).json({ message: "Vendor email is required" });
+                }
+
+                // Vendor's products count
+                const totalProducts = await productsCollection.countDocuments({ vendorEmail });
+
+                // Vendor's advertisements count
+                const totalAdvertisements = await advertisementsCollection.countDocuments({ vendorEmail });
+
+                // Vendor's orders (filtering by vendorEmail inside orders)
+                const vendorOrders = await ordersCollection.find({ vendorEmail }).toArray();
+                const totalOrders = vendorOrders.length;
+
+                // Vendor's total sales (sum of amount)
+                const salesAgg = await ordersCollection.aggregate([
+                    { $match: { vendorEmail } },
+                    {
+                        $group: {
+                            _id: null,
+                            total: { $sum: { $toInt: "$amount" } },
+                        },
+                    },
+                ]).toArray();
+
+                res.json({
+                    vendorEmail,
+                    totalProducts,
+                    totalAdvertisements,
+                    totalOrders,
+                    totalSales: salesAgg[0]?.total || 0,
+                });
+            } catch (error) {
+                res.status(500).json({ message: "Error fetching vendor stats", error });
+            }
+        });
+
+
+        // USER dashboard stats
+        app.get("/user/dashboard/stats", verifyToken, async (req, res) => {
+            try {
+                const userEmail = req.query.email; // passed as ?email=user@mail.com
+                if (!userEmail) {
+                    return res.status(400).json({ message: "User email is required" });
+                }
+
+
+                // Total watchlist items
+                const totalWatchlist = await watchlistCollection.countDocuments({ user: userEmail });
+
+                // Total pending orders
+                // const totalPendingOrders = await ordersCollection.countDocuments({ userEmail, paymentStatus: "pending" });
+
+                // Total successful orders
+                const totalOrders = await ordersCollection.countDocuments({ userEmail});
+
+                res.json({
+                    totalOrders,
+                    totalWatchlist,
+                });
+            } catch (error) {
+                console.error("Error fetching user stats:", error);
+                res.status(500).json({ message: "Error fetching user stats", error });
+            }
+        });
+
+
+
         // GET user role by email
         app.get('/users/role/:email', async (req, res) => {
             const { email } = req.params;
@@ -505,7 +722,7 @@ async function run() {
         });
 
         // get single product by id
-        app.get('/products/:id', verifyToken, async (req, res) => {
+        app.get('/products/:id', async (req, res) => {
             const productId = req.params.id;
 
             // console.log(productId)
